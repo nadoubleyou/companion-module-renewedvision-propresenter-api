@@ -661,12 +661,12 @@ class ModuleInstance extends InstanceBase<DeviceConfig> {
 		if (statusJSONObject.data.presentation_index) {
 			// ProPresenter can return a null presentation_index when no presentation is active
 			SetVariableValues(this, {
-				active_presentation_slide_index: statusJSONObject.data.presentation_index.index,
-				active_presentation_slides_remaining: Math.floor((this.getVariableValue('active_presentation_slides_count') as number) - statusJSONObject.data.presentation_index.index - 1),
+				active_presentation_slide_index: statusJSONObject.data.presentation_index?.index,
+				active_presentation_slides_remaining: Math.floor((this.getVariableValue('active_presentation_slides_count') as number) - statusJSONObject.data.presentation_index?.index - 1),
 				// This status update includes the name and uuid of the presentation - so we can update these variables too
-				active_presentation_name: statusJSONObject.data.presentation_index.presentation_id.name,
-				active_presentation_uuid: statusJSONObject.data.presentation_index.presentation_id.uuid,
-				active_presentation_index: statusJSONObject.data.presentation_index.presentation_id.index, // Note that this requires later versions of ProPresenter
+				active_presentation_name: statusJSONObject.data.presentation_index?.presentation_id?.name,
+				active_presentation_uuid: statusJSONObject.data.presentation_index?.presentation_id?.uuid,
+				active_presentation_index: statusJSONObject.data.presentation_index?.presentation_id?.index, // Note that this requires later versions of ProPresenter
 			})
 		} else {
 			SetVariableValues(this, {
@@ -710,35 +710,48 @@ class ModuleInstance extends InstanceBase<DeviceConfig> {
 				this.log('debug', 'Polled activePlaylist: ' + JSON.stringify(activePlaylistResponse.data))
 				let totalSlides = 0
 
-				if (activePlaylistResponse.data.presentation.playlist_item) { // Version 21 and above include playlist_item info which contains the playlist arrangement for the presentation
-					if (activePlaylistResponse.data.presentation.playlist_item.presentation_info.arrangement_uuid) { // Custom arrangement selected by the playlist
-						const currentArrangement = statusJSONObject.data.presentation.arrangements.find(
-							(arrangement: ProPresentationArrangement) => arrangement.id.uuid == activePlaylistResponse.data.presentation.playlist_item.presentation_info.arrangement_uuid
-						)
-						if (currentArrangement && currentArrangement.groups.length > 0) {
-							for (const groupUuid of currentArrangement.groups) {
-								const group = statusJSONObject.data.presentation.groups.find((g: any) => g.uuid == groupUuid)
-								if (group) {
-									totalSlides += group.slides.length
-								}
-							}
-						} else {
-							this.log('debug', 'currentArrangement, (' + JSON.stringify(currentArrangement) + ') not found or has zero groups. Assuming Master arrangement')
-							// Assume Master arrangement - This is a workaround for the fact that Pro 21.3.1 on Windows reports the master arrangement as an arrangement with no groups.
-							for (const group of statusJSONObject.data.presentation.groups) {
-								totalSlides += group.slides.length
-							}
-						}
-					} else { // Master arrangement selected by the playlist
-						for (const group of statusJSONObject.data.presentation.groups) {
-							totalSlides += group.slides.length
-						}
-					}
-				} else { // Earlier versions of ProPresenter do not include activePlaylistResponse.data.presentation.playlist_item - the best we can do is return master total slides //TODO: consider pulling arrangement name from library and using that?
-					for (const group of statusJSONObject.data.presentation.groups) {
-							totalSlides += group.slides.length
-						}
+			// Extract required info to determine any playlist arrangement that may be applied
+			const presentation = statusJSONObject.data.presentation
+			const playlistItem = activePlaylistResponse.data.presentation?.playlist_item // May or may not be present in response (for some versions of Pro - esp with PCO playlists)
+			const arrangementUuid = playlistItem?.presentation_info?.arrangement_uuid // May or may not be present in response (for some versions of Pro)
+
+			// Try to resolve a custom arrangement from the playlist item.
+			// Any missing link in the chain of required objects to determine a playlist arrangement will be logged and will leave currentArrangement undefined so that we default to Master arrangement.
+			let currentArrangement: ProPresentationArrangement | undefined
+			if (!playlistItem) {
+				this.log('debug', 'No playlist_item in active playlist response. Using Master arrangement.')
+			} else if (!playlistItem.presentation_info) {
+				this.log('debug', 'playlist_item has no presentation_info. Using Master arrangement.')
+			} else if (!arrangementUuid) {
+				this.log('debug', 'No arrangement_uuid in presentation_info - Using Master arrangement.')
+			} else {
+				currentArrangement = presentation.arrangements.find(
+					(arrangement: ProPresentationArrangement) => arrangement.id.uuid == arrangementUuid
+				)
+				if (!currentArrangement) {
+					this.log('debug', 'Arrangement ' + arrangementUuid + ' not found in presentation arrangements. Using Master arrangement')
+				} else if (currentArrangement.groups.length == 0) {
+					// Workaround: Pro 21.3.1 on Windows reports the master arrangement as an arrangement with no groups.
+					this.log('debug', 'Arrangement ' + arrangementUuid + ' has zero groups. Assuming Master arrangement')
+					currentArrangement = undefined
 				}
+			}
+
+			if (currentArrangement) {
+				for (const groupUuid of currentArrangement.groups) {
+					const group = presentation.groups.find((g: any) => g.uuid == groupUuid)
+					if (group) {
+						totalSlides += group.slides.length
+					} else {
+						this.log('debug', 'Group ' + groupUuid + ' from arrangement not found in presentation groups')
+					}
+				}
+			} else {
+				// Simply count all slides in all groups for slide count of master arrangement
+				for (const group of presentation.groups) {
+					totalSlides += group.slides.length
+				}
+			}
 
 				SetVariableValues(this, {
 					active_presentation_slides_count: totalSlides,
